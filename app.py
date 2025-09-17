@@ -125,7 +125,8 @@ def parse_groq_response(data: dict) -> str:
 # -------------------------
 def call_groq_api_with_input(input_text: str, api_key: str, endpoint: str, timeout: int = 30) -> str:
     """
-    Envía payload con 'input' al endpoint de Groq. Devuelve string (respuesta o mensaje de error).
+    Envía payload con 'input' al endpoint de Groq usando los nombres de campo correctos
+    (ej: max_output_tokens en vez de max_tokens). Devuelve string (respuesta o mensaje de error).
     """
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -135,8 +136,12 @@ def call_groq_api_with_input(input_text: str, api_key: str, endpoint: str, timeo
     payload = {
         "model": MODEL_NAME,
         "input": input_text,
-        "max_tokens": 512,
+        # CORRECCIÓN: usar max_output_tokens (entero) en lugar de max_tokens
+        "max_output_tokens": 512,
         "temperature": 0.2,
+        # opcionales:
+        # "top_p": 1.0,
+        # "stop": ["\n\n[USER]:"],  # si quieres detener con un token específico
     }
 
     try:
@@ -154,6 +159,7 @@ def call_groq_api_with_input(input_text: str, api_key: str, endpoint: str, timeo
         return resp.text[:4000]
 
     return parse_groq_response(data)
+
 
 # -------------------------
 # Sidebar: secrets y endpoint
