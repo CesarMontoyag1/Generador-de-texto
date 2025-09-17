@@ -5,3 +5,4 @@ sentencepiece
 huggingface-hub
 accelerate
 tokenizers
+requests
