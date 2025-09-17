@@ -1,3 +1,7 @@
+import streamlit as st
+import requests
+import time
+
 # ----------------------------
 # Función para detectar modelo disponible en Groq
 # ----------------------------
