@@ -89,8 +89,9 @@ def call_groq_api(prompt, api_key, endpoint, model):
         raise RuntimeError(f"Error {resp.status_code}: {resp.text}")
 
     data = resp.json()
-    # Extraer el texto generado
-    return data["output"][0]["content"][0]["text"]
+    # Aquí está el cambio importante
+    return data.get("output_text", "").strip()
+
 
 # ----------------------------
 # Ejecutar generación
