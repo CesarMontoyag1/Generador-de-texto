@@ -6,8 +6,8 @@ from datetime import datetime
 from typing import List, Dict
 
 st.set_page_config(page_title="Chat con Memoria (Groq)", layout="wide")
-st.title("Chatbot con Memoria — Groq API")
-st.markdown("Usa `groq_api_key` en `st.secrets` y el endpoint `/openai/v1/responses` por defecto.")
+st.title("Chatbot con Memoria — Groq API (payload `input` corregido)")
+st.markdown("Envía `input` (texto) al endpoint `/openai/v1/responses` de Groq. Guarda tu clave en `st.secrets['groq_api_key']`.")
 
 # -------------------------
 # Config
@@ -15,7 +15,7 @@ st.markdown("Usa `groq_api_key` en `st.secrets` y el endpoint `/openai/v1/respon
 SYSTEM_PROMPT = "Eres un asistente conversacional útil y conciso. Responde en español."
 MODEL_NAME = "llama3-8b-8192"
 DEFAULT_MAX_CHARS_HISTORY = 6000
-DEFAULT_GROQ_ENDPOINT = "https://api.groq.com/openai/v1/responses"  # endpoint correcto según docs. :contentReference[oaicite:1]{index=1}
+DEFAULT_GROQ_ENDPOINT = "https://api.groq.com/openai/v1/responses"
 
 # -------------------------
 # session_state
@@ -29,11 +29,8 @@ def add_message(role: str, content: str):
 def clear_history():
     st.session_state.history = [{"role": "system", "content": SYSTEM_PROMPT, "time": datetime.utcnow().isoformat()}]
 
-def history_to_messages_for_api(history: List[Dict]) -> List[Dict]:
-    # Groq acepta un campo "input" o "messages" según el endpoint; aquí enviamos "messages" estilo chat.
-    return [{"role": m["role"], "content": m["content"]} for m in history]
-
 def truncate_history_by_chars(history: List[Dict], max_chars: int) -> List[Dict]:
+    """Trunca mensajes antiguos hasta que el total de caracteres quede por debajo de max_chars."""
     if max_chars <= 0:
         return history
     total = sum(len(m["content"]) for m in history)
@@ -56,19 +53,36 @@ def truncate_history_by_chars(history: List[Dict], max_chars: int) -> List[Dict]
             break
     return new_hist[::-1]
 
+def build_input_from_history(history: List[Dict]) -> str:
+    """
+    Construye un único string 'input' a partir del historial.
+    Formato:
+      [SYSTEM]: ...
+      [USER]: ...
+      [ASSISTANT]: ...
+    Esto simplifica el payload para el endpoint que espera 'input'.
+    """
+    parts = []
+    for m in history:
+        role = m["role"].upper()
+        # Normalizar role: SYSTEM, USER, ASSISTANT
+        if role not in {"SYSTEM", "USER", "ASSISTANT"}:
+            role = "USER"
+        content = m["content"].strip()
+        parts.append(f"[{role}]: {content}")
+    return "\n\n".join(parts)
+
 # -------------------------
-# Llamada a Groq con parsing específico
+# Parseo de respuesta de Groq
 # -------------------------
 def parse_groq_response(data: dict) -> str:
     """
-    Extrae el texto de la respuesta según la estructura que usa Groq:
-    data['output'][i]['content'][j]['text'] (ejemplo en la doc).
-    Devuelve el primer texto encontrado o un fallback corto.
+    Extrae el texto de la respuesta según estructura típica de Groq:
+    data['output'][i]['content'][j]['text'].
     """
     if not isinstance(data, dict):
         return str(data)
 
-    # 1) buscar output -> content -> text
     outputs = data.get("output")
     if isinstance(outputs, list):
         for out in outputs:
@@ -77,49 +91,50 @@ def parse_groq_response(data: dict) -> str:
                 if isinstance(content_list, list):
                     for c in content_list:
                         if isinstance(c, dict):
-                            # caso típico: {'type':'output_text', 'text': "..."}
                             if "text" in c and isinstance(c["text"], str):
                                 return c["text"]
-                            # a veces el texto puede estar en 'content' o 'message' campos (robusto)
                             if "content" in c and isinstance(c["content"], str):
                                 return c["content"]
-    # 2) estructura estilo OpenAI (choices -> message/content o text)
+
+    # fallback estilo OpenAI
     choices = data.get("choices")
     if isinstance(choices, list) and len(choices) > 0:
         ch0 = choices[0]
         if isinstance(ch0, dict):
             msg = ch0.get("message")
-            if isinstance(msg, dict) and "content" in msg:
+            if isinstance(msg, dict):
                 # msg["content"] puede ser dict o str
-                if isinstance(msg["content"], str):
-                    return msg["content"]
-                if isinstance(msg["content"], dict) and "text" in msg["content"]:
-                    return msg["content"]["text"]
-            if "text" in ch0:
+                cont = msg.get("content")
+                if isinstance(cont, str):
+                    return cont
+                if isinstance(cont, dict) and "text" in cont:
+                    return cont["text"]
+            if "text" in ch0 and isinstance(ch0["text"], str):
                 return ch0["text"]
-    # 3) fallback: algún campo 'text' directo
+
     if "text" in data and isinstance(data["text"], str):
         return data["text"]
 
-    # último recurso: devolver un JSON truncado para debugging
     try:
         return json.dumps(data)[:3000]
     except Exception:
         return str(data)[:1000]
 
-def call_groq_api(messages: List[Dict], api_key: str, endpoint: str, timeout: int = 30) -> str:
+# -------------------------
+# Llamada a Groq usando 'input'
+# -------------------------
+def call_groq_api_with_input(input_text: str, api_key: str, endpoint: str, timeout: int = 30) -> str:
     """
-    Hace POST a Groq. Devuelve siempre string (respuesta o mensaje de error legible).
+    Envía payload con 'input' al endpoint de Groq. Devuelve string (respuesta o mensaje de error).
     """
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
-    # Groq admite un body con "model" y "input" o con "messages". Aquí usamos "model" + "messages".
     payload = {
         "model": MODEL_NAME,
-        "messages": messages,
+        "input": input_text,
         "max_tokens": 512,
         "temperature": 0.2,
     }
@@ -154,16 +169,16 @@ with st.sidebar:
     endpoint_override = st.text_input("Endpoint (override)", value=groq_endpoint_default)
 
     if api_key:
-        st.success("Clave encontrada en st.secrets (no se muestra).")
+        st.success("Clave detectada en st.secrets (no se muestra).")
     else:
         st.warning("No se detectó `groq_api_key` en st.secrets — se usará simulador si no hay clave.")
 
-    # Botón para probar endpoint (rápido)
+    # Botón para probar endpoint (usa 'input' en lugar de 'messages')
     if st.button("Probar endpoint"):
-        test_payload = {"model": MODEL_NAME, "input": "Prueba rápida", "max_tokens": 10}
+        test_input = "[SYSTEM]: prueba\n\n[USER]: Hola"
         try:
             headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-            resp = requests.post(endpoint_override, headers=headers, json=test_payload, timeout=10)
+            resp = requests.post(endpoint_override, headers=headers, json={"model": MODEL_NAME, "input": test_input, "max_tokens": 10}, timeout=10)
             st.markdown(f"**Resultado prueba:** HTTP {resp.status_code}")
             st.code(resp.text[:2000])
         except Exception as e:
@@ -190,7 +205,7 @@ with chat_col:
     if user_input:
         add_message("user", user_input)
         hist_for_api = truncate_history_by_chars(st.session_state.history, max_chars)
-        messages_payload = history_to_messages_for_api(hist_for_api)
+        input_text = build_input_from_history(hist_for_api)
 
         with st.chat_message("assistant"):
             placeholder = st.empty()
@@ -201,7 +216,7 @@ with chat_col:
             placeholder.markdown(assistant_text)
             add_message("assistant", assistant_text)
         else:
-            assistant_text = call_groq_api(messages_payload, api_key=api_key, endpoint=endpoint_override)
+            assistant_text = call_groq_api_with_input(input_text, api_key=api_key, endpoint=endpoint_override)
             if assistant_text.startswith("[HTTP") or assistant_text.startswith("[ERROR"):
                 placeholder.markdown(f"**Error llamando a la API:**\n\n{assistant_text}")
                 add_message("assistant", f"**(Error de la API)**: {assistant_text}")
