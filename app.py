@@ -1,108 +1,44 @@
 import streamlit as st
-import requests
-import time
+from groq import Groq
 
-# ----------------------------
-# Función para detectar modelo disponible en Groq
-# ----------------------------
-def find_working_model(api_key: str, endpoint: str, candidates: list, timeout=8):
-    """
-    Prueba los modelos en 'candidates' con un payload mínimo.
-    Devuelve el primero que funcione (status 200). Si ninguno sirve, devuelve None.
-    """
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    for model in candidates:
-        payload = {
-            "model": model,
-            "input": "[SYSTEM]: prueba\n\n[USER]: ping",
-            "max_output_tokens": 1,
-            "temperature": 0.0
-        }
-        try:
-            resp = requests.post(endpoint, headers=headers, json=payload, timeout=timeout)
-        except requests.RequestException:
-            continue
+# Cargar API Key de manera segura
+api_key = st.secrets["groq_api_key"]
+client = Groq(api_key=api_key)
 
-        if resp.ok:
-            return model
+# Inicializar historial con mensaje de sistema
+if "messages" not in st.session_state:
+    st.session_state["messages"] = [
+        {"role": "system", "content": "Eres un asistente útil y conversacional."}
+    ]
 
-        # Puedes imprimir mensajes de error para depuración
-        # print(f"{model} -> {resp.status_code}: {resp.text}")
+st.title("🤖 Chatbot con Memoria (Groq + Streamlit)")
 
-        time.sleep(0.2)
-    return None
+# Mostrar historial previo (excepto system prompt)
+for msg in st.session_state["messages"]:
+    if msg["role"] != "system":
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
-# ----------------------------
-# Configuración Streamlit
-# ----------------------------
-st.title("📝 Generador de texto con Groq")
-
-# Cargar API key desde secrets
-api_key = st.secrets.get("groq_api_key", "").strip()
-if not api_key:
-    st.error("No se encontró `groq_api_key` en tus secrets. Agrégalo en .streamlit/secrets.toml")
-    st.stop()
-
-# Endpoint de Groq
-endpoint = "https://api.groq.com/openai/v1/responses"
-
-# Buscar modelo funcional
-candidates = [
-    "llama-3.1-8b-instant",
-    "llama-3.3-70b-versatile",
-    "llama-3.1-70b-versatile",
-    "llama3-70b-8192"
-]
-
-st.info("Buscando un modelo disponible en Groq...")
-MODEL_NAME = find_working_model(api_key, endpoint, candidates)
-if not MODEL_NAME:
-    st.error("No se encontró ningún modelo disponible. Revisa tu cuenta Groq.")
-    st.stop()
-
-st.success(f"Usando el modelo: {MODEL_NAME}")
-
-# ----------------------------
 # Entrada del usuario
-# ----------------------------
-user_prompt = st.text_area("Escribe tu texto:", "")
+if prompt := st.chat_input("Escribe tu mensaje..."):
+    # Añadir mensaje del usuario al historial
+    st.session_state["messages"].append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
-# ----------------------------
-# Llamar a Groq API
-# ----------------------------
-def call_groq_api(prompt, api_key, endpoint, model):
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+    # Enviar todo el historial al modelo actualizado
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",   # <--- modelo soportado
+            messages=st.session_state["messages"]
+        )
+        respuesta = response.choices[0].message.content
 
-    payload = {
-        "model": model,
-        "input": f"[SYSTEM]: Eres un asistente útil.\n\n[USER]: {prompt}",
-        "max_output_tokens": 300,
-        "temperature": 0.7
-    }
+        # Añadir respuesta del modelo al historial
+        st.session_state["messages"].append({"role": "assistant", "content": respuesta})
 
-    resp = requests.post(endpoint, headers=headers, json=payload)
+        with st.chat_message("assistant"):
+            st.markdown(respuesta)
 
-    if not resp.ok:
-        raise RuntimeError(f"Error {resp.status_code}: {resp.text}")
-
-    data = resp.json()
-    # Aquí está el cambio importante
-    return data.get("output_text", "").strip()
-
-
-# ----------------------------
-# Ejecutar generación
-# ----------------------------
-if st.button("Generar texto"):
-    if not user_prompt.strip():
-        st.warning("Escribe algo antes de generar.")
-    else:
-        try:
-            output = call_groq_api(user_prompt, api_key, endpoint, MODEL_NAME)
-            st.subheader("✍️ Resultado:")
-            st.write(output)
-        except Exception as e:
-            st.error(f"Error llamando a la API: {e}")
+    except Exception as e:
+        st.error(f"Error con la API de Groq: {e}")
